@@ -19,6 +19,11 @@
 #define FALSE 0
 #define TRUE 1
 
+#define FLAG 0x7E
+#define A 0x01
+#define C 0x07
+#define BCC1 A^C
+
 #define BUF_SIZE 256
 
 volatile int STOP = FALSE;
@@ -89,19 +94,30 @@ int main(int argc, char *argv[])
     printf("New termios structure set\n");
 
     // Loop for input
-    unsigned char buf[BUF_SIZE + 1] = {0}; // +1: Save space for the final '\0' char
+    unsigned char set[BUF_SIZE + 1] = {0}; // +1: Save space for the final '\0' char
 
-    while (STOP == FALSE)
-    {
+   
         // Returns after 5 chars have been input
-        int bytes = read(fd, buf, BUF_SIZE);
-        buf[bytes] = '\0'; // Set end of string to '\0', so we can printf
-
-        printf(":%s:%d\n", buf, bytes);
-        if (buf[0] == 'z')
-            STOP = TRUE;
+    int bytesset = read(fd, set, BUF_SIZE);
+    
+    if(bytesset != 5){
+        printf("Invalid number of bytes");
     }
+    else{
+        for (int i = 0; i<bytesset; i++){
+        printf("set = 0x%02X\n", set[i]);
+        }
+    }
+    
+    unsigned char ua[5] = {FLAG,A,C,BCC1,FLAG};
+    
+    int bytesUA=write(fd,ua,5);
 
+    /*for (int i = 0; i<bytesUA; i++){
+        printf("ua = 0x%02X\n", ua[i]);
+    }*/
+
+    printf("%d bytes answered\n", bytesUA);
     // The while() cycle should be changed in order to respect the specifications
     // of the protocol indicated in the Lab guide
 
@@ -116,3 +132,6 @@ int main(int argc, char *argv[])
 
     return 0;
 }
+
+read_noncanonical.c
+A mostrar read_noncanonical.c.

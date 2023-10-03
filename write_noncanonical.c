@@ -57,7 +57,7 @@ void alarmHandler(int signal)
 
     printf("Alarm #%d\n", alarmCount);
 }
-
+/*
 int sendFrame(unsigned char buf[],int n){
     // Create string to send
     while (alarmCount < 4)
@@ -80,24 +80,26 @@ int sendFrame(unsigned char buf[],int n){
             
             int bytes_ua = read(fd, ua, BUF_SIZE);
         } 
-        if(bytes_ua == 0)
+        if(bytes_ua > 0)
         {
             return 0
             //if(alarmEnabled);
         }
         else{
+            
             alarm(0);
             for(int i = 0; i < bytes_ua ; i++){
-                printf("ua = 0x%02X\n" , ua[i]);
-            } 
+               printf("ua = 0x%02X\n" , ua[i]);
+            }
+            return 1 
         }
     }
-}
+}*/
 
 int main(int argc, char *argv[]){
 	int counter = 0;
 	// Set alarm function handler
-	(void) signal(SIGALRM, alarmHandler);
+    (void) signal(SIGALRM, alarmHandler);
 
 	// Program usage: Uses either COM1 or COM2	
 	const char * serialPortName = argv[1];
@@ -107,7 +109,7 @@ int main(int argc, char *argv[]){
   		"Usage: %s <SerialPort>\n"
     	"Example: %s /dev/ttyS1\n", argv[0], argv[0]);
   	exit(1);
-
+    }
 	// Open serial port device for reading and writing, and not as controlling tty
 	// because we don't want to get killed if linenoise sends CTRL-C.
 	int fd = open(serialPortName, O_RDWR | O_NOCTTY);
@@ -135,8 +137,8 @@ int main(int argc, char *argv[]){
 
 	// Set input mode (non-canonical, no echo,...)
 	newtio.c_lflag = 0;
-	newtio.c_cc[VTIME] = 0; // Inter-character timer unused
-	newtio.c_cc[VMIN] = 5; // Blocking read until 5 chars received
+	newtio.c_cc[VTIME] = 30; // Inter-character timer unused
+	newtio.c_cc[VMIN] = 0; // Blocking read until 5 chars received
 
 	// VTIME e VMIN should be changed in order to protect with a	
 	// timeout the reception of the following character(s)	
@@ -155,14 +157,19 @@ int main(int argc, char *argv[]){
 	}
 
 	printf("New termios structure set\n");
-	/*
+	
+	unsigned char set[5] = {FLAG,A,C,BCC1,FLAG};
+	unsigned char ua[BUF_SIZE + 1] = {0};
+               int flag = 0;
         // Create string to send
          while (alarmCount < 4)
          {
+            if(flag == 1){
+                break;
+             }
             if (alarmEnabled == FALSE)
             {   
-                unsigned char set[5] = {FLAG,A,C,BCC1,FLAG};
-                
+              
                 int bytes = write(fd, set, 5);
                 
                 // Wait until all bytes have been written to the serial port
@@ -173,9 +180,7 @@ int main(int argc, char *argv[]){
                 
                 printf("%d bytes written\n", bytes);
                 
-                unsigned char ua[BUF_SIZE + 1] = {0};
-            
-                int bytes_ua = read(fd, ua, BUF_SIZE);
+       
             }
             
             for (int i = 0; i < 5; i++)
@@ -186,19 +191,30 @@ int main(int argc, char *argv[]){
             // In non-canonical mode, '\n' does not end the writing.
             // Test this condition by placing a '\n' in the middle of the buffer.
             // The whole buffer must be sent even with the '\n'.
-    
             
-            if(bytes_ua == 0){
-                if(alarmEnabled);
+            while(alarmEnabled == TRUE){
+                int bytes_ua = read(fd, ua, BUF_SIZE);
+                counter++;
+              
+              
+                if(bytes_ua == 0){
+                    alarm(3);
+                   printf("0 bytes read\n");
+                }
+                else{
+                    flag = 1;
+                    for(int i = 0; i < bytes_ua ; i++){
+                        printf("ua = 0x%02X\n" , ua[i]);
+                    }
+                    break; 
+                }
+                
             }
-            else{
-                alarm(0);
-                for(int i = 0; i < bytes_ua ; i++){
-                    printf("ua = 0x%02X\n" , ua[i]);
-                } 
-            }
-         }
-         */
+         }    
+    /*
+    while sendFrame(){
+        
+    }*/
 	// Restore the old port settings
 	if (tcsetattr(fd, TCSANOW, & oldtio) == -1) {
 	  perror("tcsetattr");
@@ -210,4 +226,5 @@ int main(int argc, char *argv[]){
 	printf("Ending program\n");
 
 	return 0;
-}
+    }
+
