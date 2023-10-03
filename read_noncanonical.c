@@ -133,5 +133,3 @@ int main(int argc, char *argv[])
     return 0;
 }
 
-read_noncanonical.c
-A mostrar read_noncanonical.c.
