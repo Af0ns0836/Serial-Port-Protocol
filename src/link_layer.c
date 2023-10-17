@@ -15,6 +15,11 @@
 // MISC
 #define BAUDRATE B38400
 #define _POSIX_SOURCE 1 // POSIX compliant source
+#define BUF_SIZE 256
+
+// Globais
+
+LinkLayer connectionParameters = {0};
 
 int fd = -1;
 
@@ -22,22 +27,29 @@ int fd = -1;
 
 enum FlagWrite{
     FLAG = 0x7E,
-    A_Write = 0x03,
-    C_Write = 0x03,
+    A_SET = 0x03
 };
 
 // flags do read
 enum FlagRead{
-    A_Read = 0x01,
-    C_Read = 0x07,
+    A_UA = 0x01,
     START = 0,
     FLAG_RECEIVE = 1,
     A_RECEIVE = 2,
     C_RECEIVE = 3, 
     BCC_OK = 4,
     SM_STOP = 5,
-    BUF_SIZE =256
 };
+
+enum Control {
+    C_Set = 0x03,
+    C_UA = 0x07,
+    C_RR0 = 0x05,
+    C_RR1 = 0x85,
+    C_REJ0 = 0x81,
+    DISC = 0x0B
+}
+
 
 volatile int STOP = FALSE;
 int state = 0;
@@ -55,7 +67,7 @@ void setStateMachine(char byte){
                 }
 			break;
 		case FLAG_RECEIVE:
-			if(byte == A_Write){
+			if(byte == A_SET){
                  state = A_RECEIVE;
                  printf("chegou ao flag_receive\n");
                 }
@@ -63,7 +75,7 @@ void setStateMachine(char byte){
 			else {state = START;}
 			break;
 		case A_RECEIVE:
-			if(byte == C_Write){
+			if(byte == C_SET){
                  state = C_RECEIVE;
                  printf("chegou a a_receive\n");
                 }
@@ -71,7 +83,7 @@ void setStateMachine(char byte){
 			else state = START;
 			break;
 		case C_RECEIVE:
-			if(byte == (A_Write^C_Write)){ 
+			if(byte == (A_SET^C_SET)){ 
                  state = BCC_OK;
                  printf("chegou a c_receive\n");
                 }
@@ -200,9 +212,7 @@ int llopen(LinkLayer connectionParameters) {
   //   TCIFLUSH - flushes data received but not read.
   tcflush(fd, TCIOFLUSH);
 
-  // initialize alarm
-  (void)signal(SIGALRM, alarmHandler);
-
+  
   // Set new port settings
   if (tcsetattr(fd, TCSANOW, &newtio) == -1) {
     perror("tcsetattr");
@@ -212,24 +222,27 @@ int llopen(LinkLayer connectionParameters) {
   printf("New termios structure set\n");
   unsigned char set[5] = {
       FLAG,
-      A_Write,
-      C_Write,
-      A_Write ^ C_Write,
+      A_SET,
+      C_SET,
+      A_SET ^ C_SET,
       FLAG
     };
   unsigned char ua[5] = {
       FLAG,
-      A_Read,
-      C_Read,
-      A_Read ^ C_Read,
+      A_UA,
+      C_UA,
+      A_UA ^ C_UA,
       FLAG
     };
-    while(alarmCount < 4) {
+    while(alarmCount < connectionParameters.nRetransmissions) {
         int flag = 0;
         int counter = 0;
         if(connectionParameters.role == LlTx) {
                 //transmitter  
                 //sendSET(set,ua);
+                // initialize alarm
+            (void)signal(SIGALRM, alarmHandler);
+
             if (flag == 1) {
                 break;
             }
@@ -297,8 +310,35 @@ int llopen(LinkLayer connectionParameters) {
 ////////////////////////////////////////////////
 int llwrite(const unsigned char *buf, int bufSize)
 {
+    unsigned char tramaI[4] = { FLAG, A_SET, C_SET, BCC1};
+    unsigned char tramaItrailer[2] = {0,FLAG};
+    unsigned char bcc2 = 0;
     
-    return 0;
+    int bytes = write(fd, tramaI, bufSize);
+    
+    unsigned char escapeFlag[2] = {0x7d,0x7E^0x20};
+    unsigned char escapeEscape[2] = {0x7d,0x7d^0x20};
+    
+    while(alarmCount < connectionParameters.nRetransmissions){
+    
+        for(int i = 0; i < bufSize; i++){
+            bcc2 ^= buf[i];
+            if(buf[i] = 0x7E){
+                bytes += write(fd, escapeFlag, 2); 
+            }
+            else if(buf[i] = 0x7D){
+                bytes += write(fd, escapeEscape, 2);
+            }
+            else{
+                bytes += write(fd, buf + i, 2);
+            }
+        }
+        tramaItrailer[0] = bcc2;
+        bytes += write(fd, bcc2, 2);
+    }    
+    alarm(3);
+    setStateMachine()
+    return bytes;
 }
 
 ////////////////////////////////////////////////
@@ -316,7 +356,20 @@ int llread(unsigned char *packet)
 ////////////////////////////////////////////////
 int llclose(int showStatistics)
 {
-    // TODO
+    printf("Terminating connection...\n");
+    if(connectionParameters.role == LlTx){
+    
+    }
+    else if (connectionParameters.role == LlRx){
+    
+    } 
+    // Restore the old port settings
+	if (tcsetattr(fd, TCSANOW, & oldtio) == -1) {
+	  perror("tcsetattr");
+	  exit(-1);
+	}
 
+	close(fd);
+    printf("Terminating connection...\n");
     return 1;
 }
