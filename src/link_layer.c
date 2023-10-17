@@ -1,6 +1,7 @@
 // Link layer protocol implementation
 
 #include "link_layer.h"
+#include "alarm.h"
 
 #include <fcntl.h>
 #include <stdio.h>
@@ -38,18 +39,10 @@ enum FlagRead{
     BUF_SIZE =256
 };
 
-int alarmEnabled = FALSE;
-int alarmCount = 0;
 volatile int STOP = FALSE;
 int state = 0;
 
-void alarmHandler(int signal)
-{
-    alarmEnabled = FALSE;
-    alarmCount++;
 
-    printf("Alarm #%d\n", alarmCount);
-}
 
 void setStateMachine(char byte){
 	
@@ -98,7 +91,7 @@ void setStateMachine(char byte){
 		}
 		
 }
-
+/*
 int sendSET(unsigned char* set,unsigned char* ua){
     int counter = 0;
     int flag = 0;
@@ -124,10 +117,6 @@ int sendSET(unsigned char* set,unsigned char* ua){
             printf("set = 0x%02X\n", set[i]);
         }
 
-        // In non-canonical mode, '\n' does not end the writing.
-        // Test this condition by placing a '\n' in the middle of the buffer.
-        // The whole buffer must be sent even with the '\n'.
-
         while (alarmEnabled == TRUE) {
             int bytes_ua = read(fd, ua, BUF_SIZE);
             counter++;
@@ -146,8 +135,9 @@ int sendSET(unsigned char* set,unsigned char* ua){
         }
     }
     return 1;
-}
+}*/
 
+/*
 int sendUA(unsigned char* set,unsigned char* ua){
     int bytesset = read(fd, set, BUF_SIZE);
     if(bytesset != 5){
@@ -159,19 +149,19 @@ int sendUA(unsigned char* set,unsigned char* ua){
         printf("set = 0x%02X\n", set[i]);
         }
     }
-    
     int bytesUA=write(fd,ua,5);
 
     printf("%d bytes answered\n", bytesUA);
 
     return 1;
-}
+}*/
 ////////////////////////////////////////////////
 // LLOPEN
 ////////////////////////////////////////////////
 int llopen(LinkLayer connectionParameters) {
   // Open serial port device for reading and writing, and not as controlling tty
   // because we don't want to get killed if linenoise sends CTRL-C.
+  
   int fd = open(connectionParameters.serialPort, O_RDWR | O_NOCTTY);
 
   if (fd < 0) {
@@ -210,6 +200,9 @@ int llopen(LinkLayer connectionParameters) {
   //   TCIFLUSH - flushes data received but not read.
   tcflush(fd, TCIOFLUSH);
 
+  // initialize alarm
+  (void)signal(SIGALRM, alarmHandler);
+
   // Set new port settings
   if (tcsetattr(fd, TCSANOW, &newtio) == -1) {
     perror("tcsetattr");
@@ -231,15 +224,68 @@ int llopen(LinkLayer connectionParameters) {
       A_Read ^ C_Read,
       FLAG
     };
-  if(connectionParameters.role == LlTx) {
-    //transmitter  
-    sendSET(set,ua);
-  }
-  else if (connectionParameters.role == LlRx) {
-    //receiver
-    sendUA(set,ua);
-  }
+    while(alarmCount < 4) {
+        int flag = 0;
+        int counter = 0;
+        if(connectionParameters.role == LlTx) {
+                //transmitter  
+                //sendSET(set,ua);
+            if (flag == 1) {
+                break;
+            }
+            if (alarmEnabled == FALSE) {
 
+                int bytes = write(fd, set, 5);
+
+                // Wait until all bytes have been written to the serial port
+                sleep(1);
+
+                alarm(3); // Set alarm to be triggered in 3s
+                alarmEnabled = TRUE;
+
+                printf("%d bytes written\n", bytes);
+
+            }
+
+            for (int i = 0; i < 5; i++) {
+                printf("set = 0x%02X\n", set[i]);
+            }
+
+            while (alarmEnabled == TRUE) {
+                int bytes_ua = read(fd, ua, BUF_SIZE);
+                counter++;
+
+                if (bytes_ua == 0) {
+                    alarm(3);
+                    printf("0 bytes read\n");
+                } else {
+                    flag = 1;
+                    for (int i = 0; i < bytes_ua; i++) {
+                        printf("ua = 0x%02X\n", ua[i]);
+                    }
+                    break;
+                }
+
+            }
+        }
+        else if (connectionParameters.role == LlRx) {
+            //receiver
+            //sendUA(set,ua);
+            int bytesset = read(fd, set, BUF_SIZE);
+            if(bytesset != 5){
+                printf("Invalid number of bytes");
+                return -1;
+            }
+            else{
+                for (int i = 0; i<bytesset; i++){
+                printf("set = 0x%02X\n", set[i]);
+                }
+            }
+            int bytesUA=write(fd,ua,5);
+
+            printf("%d bytes answered\n", bytesUA);
+        }
+    }
   printf("Successfull connection established.\n");
 
   return 1;
