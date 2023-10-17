@@ -10,6 +10,7 @@
 
 extern int alarmEnabled;
 extern int alarmCount;
+extern int timeout;
 
 
 // Alarm function handler

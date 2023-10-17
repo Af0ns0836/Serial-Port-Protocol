@@ -6,6 +6,7 @@
 
 int alarmEnabled = FALSE;
 int alarmCount = 0;
+int timeout = 0;
 
 // Alarm function handler
 void alarmHandler(int signal)
