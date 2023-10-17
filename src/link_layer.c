@@ -284,19 +284,24 @@ int llopen(LinkLayer connectionParameters) {
         else if (connectionParameters.role == LlRx) {
             //receiver
             //sendUA(set,ua);
-            int bytesset = read(fd, set, BUF_SIZE);
-            if(bytesset != 5){
-                printf("Invalid number of bytes");
-                return -1;
-            }
-            else{
-                for (int i = 0; i<bytesset; i++){
-                printf("set = 0x%02X\n", set[i]);
+            while(state != STOP){
+                int bytesset = read(fd, set, BUF_SIZE);
+                for(int i = 0; i < bytesset; i++){
+                    setSetMachine(set[i]);
                 }
-            }
-            int bytesUA=write(fd,ua,5);
+                if(bytesset != 5){
+                    printf("Invalid number of bytes");
+                    return -1;
+                }
+                else{
+                    for (int i = 0; i<b ytesset; i++){
+                        printf("set = 0x%02X\n", set[i]);
+                    }
+                }
+                int bytesUA=write(fd,ua,5);
 
-            printf("%d bytes answered\n", bytesUA);
+                printf("%d bytes answered\n", bytesUA);
+            }
         }
     }
   printf("Successfull connection established.\n");
@@ -337,7 +342,9 @@ int llwrite(const unsigned char *buf, int bufSize)
         bytes += write(fd, bcc2, 2);
     }    
     alarm(3);
-    setStateMachine()
+    for(int i = 0; i < bytes.size(); i++){
+        setStateMachine(bytes[i]);
+    }
     return bytes;
 }
 
