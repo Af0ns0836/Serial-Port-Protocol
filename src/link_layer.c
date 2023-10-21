@@ -11,7 +11,6 @@
 #include <unistd.h>
 #include <signal.h>
 
-
 // MISC
 
 #define BAUDRATE B38400
@@ -52,7 +51,7 @@ enum Control {
 };
 
 
-volatile int STOP = FALSE;
+//volatile int STOP = FALSE;
 int state = 0;
 
 
@@ -105,70 +104,8 @@ void setStateMachine(char byte){
 		}
 		
 }
-/*
-int sendSET(unsigned char* set,unsigned char* ua){
-    int counter = 0;
-    int flag = 0;
-    while (alarmCount < 4) {
-        if (flag == 1) {
-            break;
-        }
-        if (alarmEnabled == FALSE) {
 
-            int bytes = write(fd, set, 5);
 
-            // Wait until all bytes have been written to the serial port
-            sleep(1);
-
-            alarm(3); // Set alarm to be triggered in 3s
-            alarmEnabled = TRUE;
-
-            printf("%d bytes written\n", bytes);
-
-        }
-
-        for (int i = 0; i < 5; i++) {
-            printf("set = 0x%02X\n", set[i]);
-        }
-
-        while (alarmEnabled == TRUE) {
-            int bytes_ua = read(fd, ua, BUF_SIZE);
-            counter++;
-
-            if (bytes_ua == 0) {
-                alarm(3);
-                printf("0 bytes read\n");
-            } else {
-                flag = 1;
-                for (int i = 0; i < bytes_ua; i++) {
-                    printf("ua = 0x%02X\n", ua[i]);
-                }
-                break;
-            }
-
-        }
-    }
-    return 1;
-}*/
-
-/*
-int sendUA(unsigned char* set,unsigned char* ua){
-    int bytesset = read(fd, set, BUF_SIZE);
-    if(bytesset != 5){
-        printf("Invalid number of bytes");
-        return -1;
-    }
-    else{
-        for (int i = 0; i<bytesset; i++){
-        printf("set = 0x%02X\n", set[i]);
-        }
-    }
-    int bytesUA=write(fd,ua,5);
-
-    printf("%d bytes answered\n", bytesUA);
-
-    return 1;
-}*/
 ////////////////////////////////////////////////
 // LLOPEN
 ////////////////////////////////////////////////
@@ -233,19 +170,20 @@ int llopen(LinkLayer connectionParameters) {
       A_UA ^ C_UA,
       FLAG
     };
-    int flag = 0;
+
     int counter = 0;
     unsigned char byte;
     if(connectionParameters.role == LlTx) {    // transmitter
          // initialize alarm
         (void)signal(SIGALRM, alarmHandler);
-        while(connectionParameters.nRetransmissions != 0 && state != STOP){
+        while(connectionParameters.nRetransmissions != 0 && state != SM_STOP){
             
             int byte = write(fd, set, 5);
             alarm(connectionParameters.timeout); // Set alarm to be triggered in 3s
             alarmEnabled = FALSE;
-            if(read(fd,&byte,1) < 0){
-                switch(state){
+            while(!alarmEnabled == FALSE && state != SM_STOP){
+                if(read(fd,&byte,1) > 0){
+                    switch(state){
                     case START:
                         if(byte == FLAG){
                             state = FLAG_RECEIVE;
@@ -286,20 +224,24 @@ int llopen(LinkLayer connectionParameters) {
                     case SM_STOP:
                         printf("chegou a stop\n");
                         break;
+                    }
                 }
             }
-
             printf("%d bytes written\n", byte);
             for (int i = 0; i < 5; i++) {
                 printf("set = 0x%02X\n", set[i]);
             }
             connectionParameters.nRetransmissions--;
         }
-            
+        if(connectionParameters.nRetransmissions == 0){
+            printf("Connection failed.\n");
+            return -1;
+        }   
     }
     else if (connectionParameters.role == LlRx) { // receiver
-    
-        while(state != STOP){
+
+        state = 0;
+        while(state != SM_STOP){
             if(read(fd,&byte,1) > 0){
                 switch(state){
                 case START:
@@ -354,7 +296,7 @@ int llopen(LinkLayer connectionParameters) {
     
   printf("Successfull connection established.\n");
 
-  return 1;
+  return fd;
 
 }
 
@@ -368,13 +310,19 @@ int llwrite(const unsigned char *buf, int bufSize)
     unsigned char tramaItrailer[2] = {0,FLAG};
     unsigned char bcc2 = 0;
     
-    int bytes = write(fd, tramaI, bufSize);
-    
     unsigned char escapeFlag[2] = {0x7d,0x7E^0x20};
     unsigned char escapeEscape[2] = {0x7d,0x7d^0x20};
-    
+
+    resetAlarm();
+
     while(alarmCount < connectionParameters.nRetransmissions){
-    
+        
+        printf("Sending packet number %d. Transmission number %d.\n", alarmCount, connectionParameters.nRetransmissions);
+        alarmEnabled = FALSE;
+        alarm(connectionParameters.timeout);
+        state = 0;
+        int bytes = write(fd, tramaI, bufSize);
+
         for(int i = 0; i < bufSize; i++){
             bcc2 ^= buf[i];
             if(buf[i] == 0x7E){
@@ -390,12 +338,59 @@ int llwrite(const unsigned char *buf, int bufSize)
         tramaItrailer[0] = bcc2;
         int sizebcc2 = 2;
         bytes += write(fd, bcc2, sizebcc2);
-    }    
-    alarm(3);
-    for(int i = 0; i < bytes; i++){
-        ;
-    }
-    return bytes;
+        alarm(3);
+        while(!alarmEnabled && state != SM_STOP){
+            unsigned char byte;
+            if(read(fd,&byte,1) > 0){
+                switch(state){
+                case START:
+                    if(byte == FLAG){
+                        state = FLAG_RECEIVE;
+                        printf("chegou ao start\n");               
+                        }
+                    break;
+                case FLAG_RECEIVE:
+                    if(byte == A_SET){
+                        state = A_RECEIVE;
+                        printf("chegou ao flag_receive\n");
+                        }
+                    else if(byte == FLAG);
+                    else {state = START;}
+                    break;
+                case A_RECEIVE:
+                    if(byte == C_SET){
+                        state = C_RECEIVE;
+                        printf("chegou a a_receive\n");
+                        }
+                    else if(byte == FLAG) state = FLAG_RECEIVE;
+                    else state = START;
+                    break;
+                case C_RECEIVE:
+                    if(byte == (A_SET^C_SET)){ 
+                        state = BCC_OK;
+                        printf("chegou a c_receive\n");
+                        }
+                    else if(byte == FLAG) state = FLAG_RECEIVE;
+                    else state = START;
+                    break;
+                case BCC_OK:
+                    if(byte == FLAG){ 
+                        state = SM_STOP;
+                        printf("chegou a bcc_ok\n");
+                        }
+                    else state = START;
+                    break;
+                case SM_STOP:
+                    printf("chegou a stop\n");
+                    break;
+                }
+            }
+        }
+        ++alarmCount;
+        resetAlarm();
+        return bytes;
+    } 
+    return -1;
 }
 
 ////////////////////////////////////////////////
@@ -430,3 +425,4 @@ int llclose(int showStatistics)
     printf("Terminating connection...\n");
     return 1;
 }
+

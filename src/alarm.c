@@ -19,5 +19,6 @@ void alarmHandler(int signal)
 
 void resetAlarm(){
     alarmCount = 0;
+    alarm(0);
 }
 
