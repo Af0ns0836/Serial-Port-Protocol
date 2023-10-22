@@ -1,3 +1,6 @@
 {
-    "C_Cpp.default.compilerPath": "/bin/g++"
+    "files.associations": {
+        "*.c": "c",
+        "string.h": "c"
+    }
 }

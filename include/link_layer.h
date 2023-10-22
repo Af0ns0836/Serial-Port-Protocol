@@ -19,6 +19,35 @@ typedef struct
     int timeout;
 } LinkLayer;
 
+typedef enum {
+    START,
+    FLAG_RECEIVE,
+    A_RECEIVE,
+    C_RECEIVE, 
+    BCC_OK,
+    SM_STOP,
+    DATA,
+    FOUND_ESC
+} MachineState;
+
+
+#define BAUDRATE B38400
+#define _POSIX_SOURCE 1 // POSIX compliant source
+#define BUF_SIZE 256
+#define ESC 0x7D
+
+
+#define FLAG  0x7E
+#define A_UA  0x01
+#define A_SET  0x03
+#define C_SET  0x03
+#define C_UA 0x07
+#define C_RR(Nr) ((Nr << 7) | 0x05)
+#define C_REJ(Nr) ((Nr << 7) | 0x01)
+#define C_N(Ns) (Ns << 6)
+#define DISC 0x0B
+
+
 // SIZE of maximum acceptable payload.
 // Maximum number of bytes that application layer should send to link layer
 #define MAX_PAYLOAD_SIZE 1000

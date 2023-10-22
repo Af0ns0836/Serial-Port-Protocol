@@ -1,7 +1,7 @@
 // Alarm example
 //
 // Modified by: Eduardo Nuno Almeida [enalmeida@fe.up.pt]
-
+/*
 #include "alarm.h"
 
 int alarmEnabled = FALSE;
@@ -11,7 +11,7 @@ int timeout = 0;
 // Alarm function handler
 void alarmHandler(int signal)
 {
-    alarmEnabled = FALSE;
+    alarmEnabled = TRUE;
     alarmCount++;
 
     printf("Alarm #%d\n", alarmCount);
@@ -20,5 +20,5 @@ void alarmHandler(int signal)
 void resetAlarm(){
     alarmCount = 0;
     alarm(0);
-}
+}*/
 
