@@ -1,8 +1,3 @@
-# RC
-1º project from Computer Networks (Redes de Computadores)
-
-Work done by : Afonso Dias e Ricardo Vieira
-
 INSTRUCTIONS FOR SERIAL PORT PROTOCOL
 =====================================
 
