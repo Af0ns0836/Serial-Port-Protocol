@@ -1,260 +1,366 @@
 // Link layer protocol implementation
-
 #include "link_layer.h"
 
-#include <fcntl.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <termios.h>
-#include <unistd.h>
-#include <signal.h>
-
 // MISC
+#define _POSIX_SOURCE 1 // POSIX compliant source
 
-MachineState state = START;
-
-LinkLayer connectionParameters = {0};
-
-unsigned char tramaTx = 0;
-unsigned char tramaRx = 1;
-int retransmissions = 0;
-int fd = -1;
-
+volatile int STOP = FALSE;
 int alarmEnabled = FALSE;
 int alarmCount = 0;
-int timeout = 0;
 
+int fd;
+unsigned char chr[1] = {0};
+
+struct termios oldtio;
+struct termios newtio;
+
+bool frameCountTx = 0;
+bool frameCountRx = 0;
+
+int tries;
+int timeout;
+stateNames state = Start;
+
+struct timeval stop, start;
+
+// Alarm function handler
 void alarmHandler(int signal)
 {
-    alarmEnabled = TRUE;
+    alarmEnabled = FALSE;
     alarmCount++;
 
-    printf("Alarm #%d\n", alarmCount);
+    printf("\nAlarm #%d\n", alarmCount);
 }
+
+int sendRxResponse(unsigned char C)
+{
+    switch (C)
+    {
+    case C_RR0:
+        printf("Sent response RR0\n");
+        break;
+    case C_RR1:
+        printf("Sent response RR1\n");
+        break;
+    case C_REJ0:
+        printf("Sent response REJ0\n");
+        break;
+    case C_REJ1:
+        printf("Sent response REJ1\n");
+        break;
+    }
+
+    unsigned char frame[5] = {FLAG, ANS_RX, C, ANS_RX ^ C, FLAG};
+    return write(fd, frame, 5);
+}
+
 
 ////////////////////////////////////////////////
 // LLOPEN
 ////////////////////////////////////////////////
-int llopen(LinkLayer connectionParameters) {
-  // Open serial port device for reading and writing, and not as controlling tty
-  // because we don't want to get killed if linenoise sends CTRL-C.
-  
-  int fd = open(connectionParameters.serialPort, O_RDWR | O_NOCTTY);
+int llopen(LinkLayer connectionParameters)
+{
+    gettimeofday(&start, NULL);
+    // Open serial port device for reading and writing, and not as controlling tty
+    // because we don't want to get killed if linenoise sends CTRL-C.
+    fd = open(connectionParameters.serialPort, O_RDWR | O_NOCTTY);
 
-  if (fd < 0) {
-    perror(connectionParameters.serialPort);
-    exit(-1);
-  }
- 
-  struct termios oldtio; 
-  struct termios newtio;
-
-  // Save current port settings
-  if (tcgetattr(fd, & oldtio) == -1) {
-    perror("tcgetattr");
-    exit(-1);
-  }
-
-  // Clear struct for new port settings
-  memset( & newtio, 0, sizeof(newtio));
-
-  newtio.c_cflag = BAUDRATE | CS8 | CLOCAL | CREAD;
-  newtio.c_iflag = IGNPAR;
-  newtio.c_oflag = 0;
-
-  // Set input mode (non-canonical, no echo,...)
-  newtio.c_lflag = 0;
-  newtio.c_cc[VTIME] = 0; // Inter-character timer unused
-  newtio.c_cc[VMIN] = 0; // Blocking read until 5 chars received
-
-  // VTIME e VMIN should be changed in order to protect with a	
-  // timeout the reception of the following character(s)	
-
-  // Now clean the line and activate the settings for the port
-  // tcflush() discards data written to the object referred to
-  // by fd but not transmitted, or data received but not read,
-  // depending on the value of queue_selector:
-  //   TCIFLUSH - flushes data received but not read.
-  tcflush(fd, TCIOFLUSH);
-
-  
-  // Set new port settings
-  if (tcsetattr(fd, TCSANOW, &newtio) == -1) {
-    perror("tcsetattr");
-    exit(-1);
-  }
-
-  printf("New termios structure set\n");
-  unsigned char set[5] = {
-      FLAG,
-      A_SET,
-      C_SET,
-      A_SET ^ C_SET,
-      FLAG};
-  unsigned char ua[5] = {
-      FLAG,
-      A_UA,
-      C_UA,
-      A_UA ^ C_UA,
-      FLAG};
-
-  unsigned char byte;
-  retransmissions = connectionParameters.nRetransmissions;
-  timeout = connectionParameters.timeout;
-  if (connectionParameters.role == LlTx)
-  {   // transmitter
-      // initialize alarm
-      state = START;
-      (void)signal(SIGALRM, alarmHandler);
-      while (connectionParameters.nRetransmissions != 0 && state != SM_STOP)
-      {
-          int bytes = write(fd, set, 5);
-          alarm(connectionParameters.timeout); // Set alarm to be triggered in 3s
-          alarmEnabled = FALSE;
-          if (bytes == -1)
-          {
-              printf("Error writing to serial port.\n");
-              return -1;
-          }
-
-          while (alarmEnabled == FALSE && state != SM_STOP)
-          {
-              if (read(fd, &byte, 1) > 0)
-              {
-                  switch (state)
-                  {
-                  case START:
-                      if (byte == FLAG)
-                      {
-                          state = FLAG_RECEIVE;
-                          printf("chegou ao start\n");
-                      }
-                      break;
-                  case FLAG_RECEIVE:
-                      if (byte == A_UA)
-                      {
-                          state = A_RECEIVE;
-                          printf("chegou ao flag_receive\n");
-                      }
-                      else if (byte == FLAG)
-                          ;
-                      else
-                      {
-                          state = START;
-                      }
-                      break;
-                  case A_RECEIVE:
-                      if (byte == C_SET)
-                      {
-                          state = C_RECEIVE;
-                          printf("chegou a a_receive\n");
-                      }
-                      else if (byte == FLAG)
-                          state = FLAG_RECEIVE;
-                      else
-                          state = START;
-                      break;
-                  case C_RECEIVE:
-                      if (byte == (A_UA ^ C_UA))
-                      {
-                          state = BCC_OK;
-                          printf("chegou a c_receive\n");
-                      }
-                      else if (byte == FLAG)
-                          state = FLAG_RECEIVE;
-                      else
-                          state = START;
-                      break;
-                  case BCC_OK:
-                      if (byte == FLAG)
-                      {
-                          state = SM_STOP;
-                          printf("chegou a bcc_ok LlTX\n");
-                      }
-                      else
-                          state = START;
-                      break;
-                  default:
-                      break;
-                  }
-              }
-          }
-          printf("%d bytes written\n", bytes);
-          for (int i = 0; i < 5; i++)
-          {
-              printf("set = 0x%02X\n", set[i]);
-          }
-        connectionParameters.nRetransmissions--;
-      }
-        if (state != SM_STOP)
-        {
-            printf("Error: retransmition\n");
-            return -1;
-        }
+    if (fd < 0)
+    {
+        perror(connectionParameters.serialPort);
+        exit(-1);
     }
-    else if (connectionParameters.role == LlRx) { // receiver
 
-        state = START;
-        while(state != SM_STOP){
-            if(read(fd,&byte,1) > 0){
-                switch(state){
-                case START:
-                    if(byte == FLAG){
-                        state = FLAG_RECEIVE;
-                        printf("chegou ao start\n");               
-                        }
-                    break;
-                case FLAG_RECEIVE:
-                    if(byte == A_SET){
-                        state = A_RECEIVE;
-                        printf("chegou ao flag_receive\n");
-                        }
-                    else if(byte == FLAG);
-                    else {state = START;}
-                    break;
-                case A_RECEIVE:
-                    if(byte == C_SET){
-                        state = C_RECEIVE;
-                        printf("chegou a a_receive\n");
-                        }
-                    else if(byte == FLAG) state = FLAG_RECEIVE;
-                    else state = START;
-                    break;
-                case C_RECEIVE:
-                    if(byte == (A_SET^C_SET)){ 
-                        state = BCC_OK;
-                        printf("chegou a c_receive\n");
-                        }
-                    else if(byte == FLAG) state = FLAG_RECEIVE;
-                    else state = START;
-                    break;
-                case BCC_OK:
-                    if(byte == FLAG){ 
-                        state = SM_STOP;
-                        printf("chegou a bcc_ok\n");
-                        }
-                    else state = START;
-                    break;
-                default: 
+    // Save current port settings
+    if (tcgetattr(fd, &oldtio) == -1)
+    {
+        perror("tcgetattr");
+        exit(-1);
+    }
+
+    // Clear struct for new port settings
+    memset(&newtio, 0, sizeof(newtio));
+
+    newtio.c_cflag = connectionParameters.baudRate | CS8 | CLOCAL | CREAD;
+    newtio.c_iflag = IGNPAR;
+    newtio.c_oflag = 0;
+
+    // Set input mode (non-canonical, no echo,...)
+    newtio.c_lflag = 0;
+    newtio.c_cc[VTIME] = 0; // Inter-character timer unused
+    newtio.c_cc[VMIN] = 0;  // the read() func will return immediately, with either the number of bytes currently available in the receiver buffer, or the number of bytes requested
+
+    // VTIME e VMIN should be changed in order to protect with a
+    // timeout the reception of the following character(s)
+
+    tcflush(fd, TCIOFLUSH);
+
+    // Set new port settings
+    if (tcsetattr(fd, TCSANOW, &newtio) == -1)
+    {
+        perror("tcsetattr");
+        exit(-1);
+    }
+
+    printf("New termios structure set\n");
+
+    tries = connectionParameters.nRetransmissions;
+    timeout = connectionParameters.timeout;
+
+    if(connectionParameters.role == LlTx){
+
+        unsigned char buf[5] = {FLAG, CMD_TX, C_SET, CMD_TX ^ C_SET, FLAG};
+
+        // Set alarm function handler
+        (void)signal(SIGALRM, alarmHandler);
+
+        
+        alarmEnabled = FALSE;
+        alarmCount = 0;
+
+        while (alarmCount <= tries)
+        {
+            if (alarmEnabled == FALSE)
+            {
+                alarm(timeout); // Set alarm to be triggered in timeout seconds
+                alarmEnabled = TRUE;
+
+                int write_bytes = write(fd, buf, 5);
+                sleep(1);
+                printf("%d bytes written\n", write_bytes);
+            }
+
+            // Returns after a char has been input
+            int read_bytes = read(fd, chr, 1);
+            if (read_bytes)
+            {
+                switch (state)
+                {
+                case Start:
+                {
+                    if (chr[0] == FLAG)
+                        state = FlagRCV;
                     break;
                 }
-            
-            } 
+                case FlagRCV:
+                {
+                    if (chr[0] == ANS_RX) // This is specific state machine for receiving UA that exits as soon as a wrong char is read, in a more general state machine, we don't verify what we receive here
+                        state = ARCV;
+                    else if (chr[0] != FLAG)
+                        state = Start;
+                    break;
+                }
+                case ARCV:
+                {
+                    if (chr[0] == C_UA)
+                        state = CRCV;
+                    else if (chr[0] == FLAG)
+                        state = FlagRCV;
+                    else
+                        state = Start;
+                    break;
+                }
+                case CRCV:
+                {
+                    if (chr[0] == (ANS_RX ^ C_UA)) // In a more general state machine, where we don't know what we are receiving, we compare the received BCC1 to the A (received) ^ C (received)
+                        state = BccOK;
+                    else if (chr[0] == FLAG)
+                        state = FlagRCV;
+                    else
+                        state = Start;
+                    break;
+                }
+
+                case BccOK:
+                {
+                    if (chr[0] == FLAG)
+                    {
+                        printf("Read UA\n\n");
+
+                        alarm(0);
+                        return 1;
+                    }
+                    else
+                        state = Start;
+                    break;
+                }
+                }
+            }
         }
-        int bytesUA=write(fd,ua,5);
-        if(bytesUA == -1){
-            printf("Error writing to serial port.\n");
-            return -1;
-        }
-        printf("%d bytes answered\n", bytesUA);
-            
+    }   
+    else if(connectionParameters.role == LlRx){
+            // Loop for input
+        chr[0] = 0;
+        state = Start;
+        STOP = FALSE;
+
+        while (STOP == FALSE)
+        {
+            // Returns after a char has been input
+            int read_bytes = read(fd, chr, 1);
+
+            if (read_bytes)
+            {
+                switch (state)
+                {
+                case Start:
+                {
+                    if (chr[0] == FLAG)
+                        state = FlagRCV;
+                    break;
+                }
+                case FlagRCV:
+                {
+                    if (chr[0] == CMD_TX)
+                        state = ARCV;
+                    else if (chr[0] != FLAG)
+                        state = Start;
+                    break;
+                }
+                case ARCV:
+                {
+                    if (chr[0] == CMD_TX)
+                        state = CRCV;
+                    else if (chr[0] == FLAG)
+                        state = FlagRCV;
+                    else
+                        state = Start;
+                    break;
+                }
+                case CRCV:
+                {
+                    if (chr[0] == (CMD_TX ^ C_SET))
+                        state = BccOK;
+                    else if (chr[0] == FLAG)
+                        state = FlagRCV;
+                    else
+                        state = Start;
+                    break;
+                }
+                case BccOK:
+                {
+                    if (chr[0] == FLAG)
+                    {
+                        printf("Read SET\n");
+
+                        unsigned char UA[5] = {FLAG, ANS_RX, C_UA, ANS_RX ^ C_UA, FLAG};
+                        int bytes = write(fd, UA, 5);
+                        sleep(1);
+                        printf(" %d UA bytes written\n\n", bytes);
+
+                        STOP = TRUE;
+                    }
+                    else
+                    {
+                        state = Start;
+                    }
+                    break;
+                }
+                }
+            }
+        }    
     }
-    
-  printf("Successfull connection established.\n");
+    return -1;
+}
 
-  return fd;
+int llwriteSendFrame(unsigned char *frame, int frameSize)
+{  
+    unsigned char expectedResponse;
+    unsigned char rejection;
+    if(frameCountTx == 1){
+        expectedResponse = C_RR0;
+        rejection = C_REJ1;
+    }
+    else {
+        expectedResponse = C_RR1;
+        rejection = C_REJ0;
+    }
 
+    // Set alarm function handler
+    (void)signal(SIGALRM, alarmHandler);
+
+    chr[0] = 0;
+    state = Start;
+    alarmEnabled = FALSE;
+    alarmCount = 0;
+
+    while (alarmCount <= tries)
+    {
+        if (alarmEnabled == FALSE)
+        {
+            alarm(timeout); // Set alarm to be triggered in timeout seconds
+            alarmEnabled = TRUE;
+
+            int write_bytes = write(fd, frame, frameSize);
+            sleep(1);
+
+        }
+
+        // Returns after a char has been input
+        int read_bytes = read(fd, chr, 1);
+        if (read_bytes)
+        {
+            switch (state)
+            {
+            case Start:
+            {
+                if (chr[0] == FLAG)
+                    state = FlagRCV;
+                break;
+            }
+            case FlagRCV:
+            {
+                if (chr[0] == ANS_RX)
+                    state = ARCV;
+                else if (chr[0] != FLAG)
+                    state = Start;
+                break;
+            }
+            case ARCV:
+            {
+                if (chr[0] == expectedResponse)
+                    state = CRCV;
+                else if (chr[0] == FLAG)
+                    state = FlagRCV;
+                else if (chr[0] == rejection)
+                {
+                    printf("Read RJ\n");
+                    alarm(0);
+                    return 0;
+                }
+                else
+                    state = Start;
+                break;
+            }
+            case CRCV:
+            {
+                if (chr[0] == (ANS_RX ^ expectedResponse))
+                    state = BccOK;
+                else if (chr[0] == FLAG)
+                    state = FlagRCV;
+                else
+                    state = Start;
+                break;
+            }
+            case BccOK:
+            {
+                if (chr[0] == FLAG)
+                {
+                    printf("Read RR%d\n", !frameCountTx);
+                    alarm(0);
+                    frameCountTx = !frameCountTx;
+                    return 1;
+                }
+                else
+                    state = Start;
+                break;
+            }
+            }
+        }
+    }
+    printf("Obtained no appropriate response after numRetransmission alarms\n");
+    alarm(0);
+    return -1;
 }
 
 ////////////////////////////////////////////////
@@ -262,216 +368,231 @@ int llopen(LinkLayer connectionParameters) {
 ////////////////////////////////////////////////
 int llwrite(const unsigned char *buf, int bufSize)
 {
-
-    unsigned char tramaI[4] = { FLAG, A_SET, C_SET, A_SET ^ C_SET};
-    unsigned char tramaItrailer[2] = {0,FLAG};
-    unsigned char bcc2 = 0;
     
-    unsigned char escapeFlag[2] = {0x7d,0x7E^0x20};
-    unsigned char escapeEscape[2] = {0x7d,0x7d^0x20};
+    unsigned char infFrame[MAX_PAYLOAD_SIZE * 2];
+    unsigned char controlField;
 
+    if(frameCountTx == 1){
+        controlField = C_FRAME1;
+    }
+    else{
+        controlField = C_FRAME0; 
+    }
+    
+    unsigned char header[4] = {FLAG,
+                               CMD_TX,
+                               controlField,
+                               CMD_TX ^ controlField};
 
-    printf("Sending packet number %d. Transmission number %d.\n", alarmCount, connectionParameters.nRetransmissions);
-    alarm(connectionParameters.timeout);
-    int bytes = write(fd, tramaI, bufSize);
+    unsigned result_idx = 4; // Next idx on which to write data
+    memcpy(infFrame, header, 4);
 
-    for(int i = 0; i < bufSize; i++){
-        bcc2 ^= buf[i];
-        if(buf[i] == 0x7E){
-                bytes += write(fd, escapeFlag, 2); 
+    unsigned char bcc2 = buf[0];
+
+    // Stuffing Data
+    StuffingAux stuffData;
+
+    for (int i = 0; i < bufSize; i++)
+    {
+        stuffData = stuffByte(buf[i]);
+
+        if (stuffData.stuffed)
+        {
+            infFrame[result_idx++] = stuffData.byte1;
+            infFrame[result_idx] = stuffData.byte2;
         }
-        else if(buf[i] == 0x7D){
-                bytes += write(fd, escapeEscape, 2);
+        else
+        {
+            infFrame[result_idx] = buf[i];
         }
-        else{
-                bytes += write(fd, buf + i, 2);
+        result_idx++;
+
+        if (i)
+        { // If it is not the first chunk of data, XOR it with the rest
+            bcc2 = bcc2 ^ buf[i];
         }
     }
-    tramaItrailer[0] = bcc2;
-    int sizebcc2 = 2;
-    bytes += write(fd, &bcc2, sizebcc2);
-    bytes += write(fd, tramaItrailer, 2);
-    unsigned char byte, c = 0;
-    state = START;
-    int rejected, accepted = 0;
 
-        while(alarmCount < connectionParameters.nRetransmissions){
-            alarmEnabled = FALSE;
-            alarm(connectionParameters.timeout);
-            rejected = 0; accepted = 0;
-            while(!alarmEnabled && !rejected && !accepted){
+    StuffingAux stuffBCC2 = stuffByte(bcc2);
 
-                while(state != SM_STOP){
-                    if(read(fd,&byte,1) > 0){
-                        switch(state){
-                        case START:
-                            if(byte == FLAG){
-                                state = FLAG_RECEIVE;
-                                printf("chegou ao start\n");               
-                                }
-                            break;
-                        case FLAG_RECEIVE:
-                            if(byte == A_UA){
-                                state = A_RECEIVE;
-                                printf("chegou ao flag_receive\n");
-                                }
-                            else if(byte == FLAG);
-                            else {state = START;}
-                            break;
-                        case A_RECEIVE:
-                            if(byte == C_RR(0) || byte == C_RR(1) || byte == C_REJ(0) || byte == C_REJ(1) || byte == DISC){
-                                state = C_RECEIVE;
-                                c = byte;
-                                printf("chegou a a_receive\n");
-                            }
-                            else if(byte == FLAG) state = FLAG_RECEIVE;
-                            else state = START;
-                            break;
-                        case C_RECEIVE:
-                            if(byte == (A_UA ^ c)){ 
-                                state = BCC_OK;
-                                printf("chegou a c_receive\n");
-                                }
-                            else if(byte == FLAG) state = FLAG_RECEIVE;
-                            else state = START;
-                            break;
-                        case BCC_OK:
-                            if(byte == FLAG){ 
-                                state = SM_STOP;
-                                printf("chegou a bcc_ok\n");
-                                }
-                            else state = START;
-                            break;
-                        default: 
-                            break;
-                        }                
-                    }
-                }    
-                if(!c){
-                    continue;
-                }
-                    else if(c == C_RR(tramaTx)){
-                        printf("Received RR\n");
-                        accepted = 1;
-                        tramaTx = (tramaTx + 1)%2;
-                    
-                        
-                    }
-                    else if(c == C_REJ(tramaTx)){
-                        printf("Received REJ\n");
-                        rejected = 1;
-            
-                        break;
-                    }
-                    else continue;
-            }
-        if(accepted) break;
-        ++alarmCount;
-        } 
-        if(accepted) return bytes;
-        else{
-            llclose(fd);
-            printf("Error: retransmition\n");
-            return -1;
-        }
+    if (stuffBCC2.stuffed)
+    {
+        infFrame[result_idx++] = stuffBCC2.byte1;
+        infFrame[result_idx++] = stuffBCC2.byte2;
+    }
+    else
+    {
+        infFrame[result_idx++] = bcc2;
+    }
+
+    infFrame[result_idx] = FLAG;
+
+    int result = llwriteSendFrame(infFrame, 2 * bufSize + 6);
+
+    while (result == 0)
+    {
+        result = llwriteSendFrame(infFrame, 2 * bufSize + 6); // Resend frame while REJs are being read
+    }
+    return result == 1 ? bufSize + 6 : -1;
 }
 
 ////////////////////////////////////////////////
 // LLREAD
 ////////////////////////////////////////////////
-int llread(unsigned char *packet) 
+int llread(unsigned char *packet)
 {
-    unsigned char byte, c;
-    int i = 0;
-    state = START;
+    chr[0] = 0;
+    state = Start;
+    STOP = FALSE;
 
-    while (state != SM_STOP)
+    bool receivedFrame;
+
+    unsigned int packetIdx = 0;
+    unsigned char bcc2;
+
+    while (STOP == FALSE)
     {
-        if (read(fd, &byte, 1) > 0)
+        // Returns after a char has been input
+        int read_bytes = read(fd, chr, 1);
+        if (read_bytes)
         {
             switch (state)
             {
-            case START:
-                if (byte == FLAG)
-                    state = FLAG_RECEIVE;
+            case Start:
+            {
+                if (chr[0] == FLAG)
+                    state = FlagRCV;
                 break;
-            case FLAG_RECEIVE:
-                if (byte == A_SET)
-                    state = A_RECEIVE;
-                else if (byte != FLAG)
-                    state = START;
+            }
+            case FlagRCV:
+            {
+                if (chr[0] == CMD_TX)
+                    state = ARCV;
+                else if (chr[0] != FLAG)
+                    state = Start;
                 break;
-            case A_RECEIVE:
-                if (byte == C_N(tramaRx))
+            }
+            case ARCV:
+            {
+                if (chr[0] == C_FRAME0)
                 {
-                    state = C_RECEIVE;
-                    c = byte;
+                    receivedFrame = 0;
+                    state = CRCV;
                 }
-                else if (byte == FLAG)
-                    state = FLAG_RECEIVE;
-                else if (byte == DISC)
+                else if (chr[0] == C_FRAME1)
                 {
-                    unsigned char discon[5] = {FLAG, A_UA, DISC, A_UA ^ DISC, FLAG};
-                    write(fd, discon, 5);
-                    return 0;
+                    receivedFrame = 1;
+                    state = CRCV;
                 }
+                else if (chr[0] == FLAG)
+                    state = FlagRCV;
                 else
-                    state = START;
+                    state = Start;
                 break;
-            case C_RECEIVE:
-                if (byte == (A_SET ^ c))
-                    state = DATA;
-                else if (byte == FLAG)
-                    state = FLAG_RECEIVE;
+            }
+            case CRCV:
+            {
+                unsigned int receivedC = receivedFrame ? 0x40 : 0x00;
+                if (chr[0] == (CMD_TX ^ receivedC))
+                    state = Data;
+                else if (chr[0] == FLAG)
+                    state = FlagRCV;
                 else
-                    state = START;
+                    state = Start;
                 break;
-            case DATA:
-                if (byte == ESC)
-                    state = FOUND_ESC;
-                else if (byte == FLAG)
+            }
+            case Data:
+            {
+                if (chr[0] == ESC)
+                    state = Destuffing;
+                else if (chr[0] == FLAG)
                 {
-                    unsigned char bcc2 = packet[i - 1];
-                    i--;
-                    packet[i] = '\0';
-                    unsigned char acc = packet[0];
+                    printf("Read whole input\n");
+                    unsigned char receivedBcc2 = packet[packetIdx - 1];
+                    bcc2 = packet[0];
 
-                    for (unsigned int j = 1; j < i; j++)
-                        acc ^= packet[j];
+                    packet[packetIdx - 1] = '\0'; // Remove read bcc2 because the application layer only wants the data packets
 
-                    if (bcc2 == acc)
+                    for (int i = 1; i < packetIdx - 1; i++) // Start in index 1 because index 0 is THE value that initializes bcc2
                     {
-                        state = SM_STOP;
-                        unsigned char rready[5] = {FLAG, A_UA, C_RR(tramaRx), A_UA ^ C_RR(tramaRx), FLAG};
-                        write(fd, rready, 5);
-                        tramaRx = (tramaRx + 1) % 2;
-                        return i;
+                        bcc2 = bcc2 ^ packet[i];
                     }
-                    else
+
+                    if (bcc2 == receivedBcc2) // Frame data has NO errors
                     {
-                        printf("Error: retransmition\n");
-                        unsigned char rrej[5] = {FLAG, A_UA, C_REJ(tramaRx), A_UA ^ C_REJ(tramaRx), FLAG};
-                        write(fd, rrej, 5);
-                        return -1;
-                    };
+                        if (receivedFrame == frameCountRx)
+                        {
+                            frameCountRx = !frameCountRx;
+                            if(frameCountRx==1){ // Updated value with what frame receiver expects next
+                                sendRxResponse(C_RR1);
+                            }
+                            else{
+                                sendRxResponse(C_RR0);
+                            }
+                            printf("Read expected frame\n");
+                            return packetIdx;
+                        }
+                        else // Duplicate Frame
+                        {
+                            if(frameCountRx==1){ 
+                                sendRxResponse(C_RR1);
+                            }
+                            else{
+                                sendRxResponse(C_RR0);
+                            } // Receiver is still expecting the same frame, because it just got a duplicate
+                            printf("Read duplicate frame\n");
+                            return -1;
+                        }
+                    }
+                    else // Frame data HAS errors
+                    {
+                        if (receivedFrame == frameCountRx)
+                        {
+                            if(frameCountRx==1){ 
+                                sendRxResponse(C_REJ1);
+                            }
+                            else{
+                                sendRxResponse(C_REJ0);
+                            } // Receiver is still expecting the same frame, because it just got a frame with errors
+                            printf("Read expected frame with errors\n");
+                            return -1;
+                        }
+                        else // Duplicate Frame with errors
+                        {
+                            if(frameCountRx==1){
+                                sendRxResponse(C_RR1);
+                            }
+                            else{
+                                sendRxResponse(C_RR0);
+                            } 
+                            printf("Read duplicate frame with errors\n");
+                            return -1;
+                        }
+                    }
                 }
                 else
+                    packet[packetIdx++] = chr[0];
+                break;
+            }
+            case Destuffing:
+            {
+                if (chr[0] == 0x5E)       // in case what was stuffed was the equivalent of a FLAG
                 {
-                    packet[i++] = byte;
+                    packet[packetIdx++] = 0x7E;
+                    state = Data;
+                }
+                else if (chr[0] == 0x5D)  // in case what was stuffed was the equivalent of an ESC
+                {
+                    packet[packetIdx++] = 0x7D;
+                    state = Data;
+                }
+                else                      // in case there was something wrong with stuffing and an ESC was found alone
+                {
+                    printf("An ESC wasn't stuffed\n");   
+                    state = Data;
                 }
                 break;
-            case FOUND_ESC:
-                state = DATA;
-                if (byte == ESC || byte == FLAG)
-                    packet[i++] = byte;
-                else
-                {
-                    packet[i++] = ESC;
-                    packet[i++] = byte;
-                }
-                break;
-            default:
-                break;
+            }
             }
         }
     }
@@ -481,54 +602,258 @@ int llread(unsigned char *packet)
 ////////////////////////////////////////////////
 // LLCLOSE
 ////////////////////////////////////////////////
-int llclose(int showStatistics)
+
+int llclose(int showStatistics, LinkLayer connectionParameters)
 {
-    state = START;
-    unsigned char byte;
-    (void) signal(SIGALRM, alarmHandler);
-    
-    while (connectionParameters.nRetransmissions != 0 && state != SM_STOP) {
-                
-        unsigned char discon[5] = {FLAG, A_SET, DISC, A_SET ^ DISC, FLAG};
-    	write(fd, discon, 5);
-        alarm(connectionParameters.timeout);
+    if(connectionParameters.role == LlTx){
+
+        unsigned char buf[5] = {FLAG, CMD_TX, C_DISC, CMD_TX ^ C_DISC, FLAG};
+
+        // Set alarm function handler
+        (void)signal(SIGALRM, alarmHandler);
+
+        chr[0] = 0;
+        state = Start;
         alarmEnabled = FALSE;
-                
-        while (alarmEnabled == FALSE && state != SM_STOP) {
-            if (read(fd, &byte, 1) > 0) {
-                switch (state) {
-                    case START:
-                        if (byte == FLAG) state = FLAG_RECEIVE;
-                        break;
-                    case FLAG_RECEIVE:
-                        if (byte == A_UA) state = A_RECEIVE;
-                        else if (byte != FLAG) state = START;
-                        break;
-                    case A_RECEIVE:
-                        if (byte == DISC) state = C_RECEIVE;
-                        else if (byte == FLAG) state = FLAG_RECEIVE;
-                        else state = START;
-                        break;
-                    case C_RECEIVE:
-                        if (byte == (A_UA ^ DISC)) state = BCC_OK;
-                        else if (byte == FLAG) state = FLAG_RECEIVE;
-                        else state = START;
-                        break;
-                    case BCC_OK:
-                        if (byte == FLAG) state = SM_STOP;
-                        else state = START;
-                        break;
-                    default: 
-                        break;
+        alarmCount = 0;
+
+        while (alarmCount <= tries)
+        {
+            if (alarmEnabled == FALSE)
+            {
+                alarm(timeout); // Set alarm to be triggered in timeout seconds
+                alarmEnabled = TRUE;
+
+                int write_bytes = write(fd, buf, 5);
+                sleep(1);
+                printf(" %d bytes written\n", write_bytes);
+            }
+
+            // Returns after a char has been input
+            int read_bytes = read(fd, chr, 1);
+            if (read_bytes)
+            {
+                switch (state)
+                {
+                case Start:
+                    if (chr[0] == FLAG)
+                        state = FlagRCV;
+                    break;
+                case FlagRCV:
+                    if (chr[0] == CMD_RX)
+                        state = ARCV;
+                    else if (chr[0] != FLAG)
+                        state = Start;
+                    break;
+                case ARCV:
+                    if (chr[0] == C_DISC)
+                        state = CRCV;
+                    else if (chr[0] == FLAG)
+                        state = FlagRCV;
+                    else
+                        state = Start;
+                    break;
+                case CRCV:
+                    if (chr[0] == (C_DISC ^ CMD_RX))
+                        state = BccOK;
+                    else if (chr[0] == FLAG)
+                        state = FlagRCV;
+                    else
+                        state = Start;
+                    break;
+                case BccOK:
+                    if (chr[0] == FLAG)
+                    {
+                        printf("Read C_DISC\n");
+
+                        unsigned char UA[5] = {FLAG, ANS_TX, C_UA, ANS_TX ^ C_UA, FLAG};
+                        int bytes = write(fd, UA, 5);
+                        sleep(1);
+                        printf(" %d UA bytes written\n", bytes);
+
+                        alarm(0);
+                        return 1;
+                    }
+                    else
+                        state = Start;
+                    break;
                 }
             }
-        } 
-        connectionParameters.nRetransmissions--;
+        }
+    }    
+    else if(connectionParameters.role == LlRx){
+        state = Start;
+        chr[0] = 0;
+
+        STOP = FALSE;
+
+        while (STOP == FALSE)
+        {
+            // Returns after a char has been input
+            int read_bytes = read(fd, chr, 1);
+            if (read_bytes)
+            {
+                switch (state)
+                {
+                case Start:
+                    if (chr[0] == FLAG)
+                        state = FlagRCV;
+                    break;
+                case FlagRCV:
+                    if (chr[0] == CMD_TX)
+                        state = ARCV;
+                    else if (chr[0] != FLAG)
+                        state = Start;
+                    break;
+                case ARCV:
+                    if (chr[0] == C_DISC)
+                        state = CRCV;
+                    else if (chr[0] == FLAG)
+                        state = FlagRCV;
+                    else
+                        state = Start;
+                    break;
+                case CRCV:
+                    if (chr[0] == (C_DISC ^ CMD_TX))
+                        state = BccOK;
+                    else if (chr[0] == FLAG)
+                        state = FlagRCV;
+                    else
+                        state = Start;
+                    break;
+                case BccOK:
+                    if (chr[0] == FLAG)
+                    {
+                        printf("Read C_DISC\n");
+                        STOP = true;
+                    }
+                    else
+                        state = Start;
+                }
+            }
+        }
+
+        unsigned char buf[5] = {FLAG, CMD_RX, C_DISC, CMD_RX ^ C_DISC, FLAG};
+
+        (void)signal(SIGALRM, alarmHandler);
+
+        chr[0] = 0;
+        state = Start;
+        alarmEnabled = FALSE;
+        alarmCount = 0;
+
+        // Write C_C_DISC and wait for UA from transmitter
+        while (alarmCount <= tries)
+        {
+            if (alarmEnabled == FALSE)
+            {
+                alarm(timeout); // Set alarm to be triggered in timeout seconds
+                alarmEnabled = TRUE;
+
+                int write_bytes = write(fd, buf, 5);
+                sleep(1);
+                printf(" %d bytes written\n", write_bytes);
+            }
+
+            // Returns after a char has been input
+            int read_bytes = read(fd, chr, 1);
+            if (read_bytes)
+            {
+                switch (state)
+                {
+                case Start:
+                {
+                    if (chr[0] == FLAG)
+                        state = FlagRCV;
+                    break;
+                }
+                case FlagRCV:
+                {
+                    if (chr[0] == ANS_TX) // This is specific state machine for receiving UA that exits as soon as a wrong char is read, in a more general state machine, we don't verify what we receive here
+                        state = ARCV;
+                    else if (chr[0] != FLAG)
+                        state = Start;
+                    break;
+                }
+                case ARCV:
+                {
+                    if (chr[0] == C_UA)
+                        state = CRCV;
+                    else if (chr[0] == FLAG)
+                        state = FlagRCV;
+                    else
+                        state = Start;
+                    break;
+                }
+                case CRCV:
+                {
+                    if (chr[0] == (ANS_TX ^ C_UA)) // In a more general state machine, where we don't know what we are receiving, we compare the received BCC1 to the A (received) ^ C (received)
+                        state = BccOK;
+                    else if (chr[0] == FLAG)
+                        state = FlagRCV;
+                    else
+                        state = Start;
+                    break;
+                }
+
+                case BccOK:
+                {
+                    if (chr[0] == FLAG)
+                    {
+                        printf("Read UA\n");
+                        alarm(0);
+                        gettimeofday(&stop, NULL);
+
+                        printf("took %lu us to transfer the file\n", (stop.tv_sec - start.tv_sec) * 1000000 + stop.tv_usec - start.tv_usec);
+                        return 1;
+                    }
+                    else
+                        state = Start;
+                    break;
+                }
+                }
+            }
+        }
     }
 
-    if (state != SM_STOP) return -1;
-    unsigned char closing[5] = {FLAG, A_SET, C_UA, A_SET ^ C_UA, FLAG};
-    write(fd, closing, 5);
-    return close(fd);
+    // Restore the old port settings
+    if (tcsetattr(fd, TCSANOW, &oldtio) == -1)
+    {
+        perror("tcsetattr");
+        exit(-1);
+    }
+
+    close(fd);
+    
+    
+    return 1;
 }
 
+StuffingAux stuffByte(unsigned char byte)
+{
+    StuffingAux result;
+
+    switch (byte)
+    {
+    case FLAG:
+    {
+        result.stuffed = true;
+        result.byte1 = ESC;
+        result.byte2 = 0x5E;
+        return result;
+    }
+    case ESC:
+    {
+        result.stuffed = true;
+        result.byte1 = ESC;
+        result.byte2 = 0x5D;
+        return result;
+    }
+    default:
+    {
+        result.stuffed = FALSE;
+        result.byte1 = byte;
+        return result;
+    }
+    }
+}

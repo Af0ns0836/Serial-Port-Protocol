@@ -20,6 +20,7 @@ RX_FILE = penguin-received.gif
 .PHONY: all
 all: $(BIN)/main $(BIN)/cable
 
+# Added -lm flag to search math library while linking
 $(BIN)/main: main.c $(SRC)/*.c
 	$(CC) $(CFLAGS) -o $@ $^ -I$(INCLUDE) -lm
 
@@ -28,11 +29,11 @@ $(BIN)/cable: $(CABLE_DIR)/cable.c
 
 .PHONY: run_tx
 run_tx: $(BIN)/main
-	./$(BIN)/main $(TX_SERIAL_PORT) tx $(TX_FILE) -lm
+	./$(BIN)/main $(TX_SERIAL_PORT) tx $(TX_FILE)
 
 .PHONY: run_rx
 run_rx: $(BIN)/main
-	./$(BIN)/main $(RX_SERIAL_PORT) rx $(RX_FILE) -lm
+	./$(BIN)/main $(RX_SERIAL_PORT) rx $(RX_FILE)
 
 .PHONY: run_cable
 run_cable: $(BIN)/cable
